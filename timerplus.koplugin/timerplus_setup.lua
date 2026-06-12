@@ -234,8 +234,11 @@ function CountdownSetup:_unitColumn(unit)
         seconds = { value = s, unitsec = 1, label = _("sec") },
     }
     local c = conf[unit]
+    -- text glyphs like KOReader's own NumberPicker: the icon set has no
+    -- "chevron.down", so icon buttons can't be used here
     local up = Button:new{
-        icon = "chevron.up",
+        text = "▲",
+        text_font_size = 24,
         bordersize = 0,
         show_parent = self,
         callback = function()
@@ -253,7 +256,8 @@ function CountdownSetup:_unitColumn(unit)
         end,
     }
     local down = Button:new{
-        icon = "chevron.down",
+        text = "▼",
+        text_font_size = 24,
         bordersize = 0,
         show_parent = self,
         callback = function()

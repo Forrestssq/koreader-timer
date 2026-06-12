@@ -8,13 +8,15 @@ rotation_mode:      optional Screen.ORIENTATION_* value; the previous
 ]]
 
 local Blitbuffer = require("ffi/blitbuffer")
-local ButtonTable = require("ui/widget/buttontable")
+local Button = require("ui/widget/button")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Size = require("ui/size")
@@ -121,21 +123,43 @@ function ClockWidget:_fitFace(sample)
     }
     local h = probe:getSize().h
     probe:free()
-    local max_h = math.floor(Screen:getHeight() * 0.4)
+    local max_h = math.floor(Screen:getHeight() * 0.35)
     if h > max_h then
         size = math.max(20, math.floor(size * max_h / h))
     end
     return Font:getFace("cfont", size)
 end
 
+-- Plain or inverted (black background, white text, larger font) button.
+-- Inversion falls back to a regular white button if Button's internals
+-- ever change, so the label can never end up black-on-black.
+function ClockWidget:_makeButton(opts)
+    local btn = Button:new{
+        text = opts.text,
+        width = opts.width,
+        text_font_size = opts.font_size,
+        text_font_bold = true,
+        radius = Screen:scaleBySize(8),
+        enabled = opts.enabled ~= false,
+        callback = opts.callback,
+        show_parent = self,
+    }
+    if opts.invert and btn.frame and btn.label_widget then
+        btn.frame.background = Blitbuffer.COLOR_BLACK
+        btn.label_widget.fgcolor = Blitbuffer.COLOR_WHITE
+    end
+    return btn
+end
+
 function ClockWidget:_build()
     local screen_w, screen_h = Screen:getWidth(), Screen:getHeight()
     local time_str = fmtHMS(self:_displaySeconds())
     self._time_len = #time_str
+    self.time_face = self:_fitFace(time_str)
 
     self.time_widget = TextWidget:new{
         text = time_str,
-        face = self:_fitFace(time_str),
+        face = self.time_face,
         bold = true,
     }
     self.time_cont = CenterContainer:new{
@@ -152,76 +176,68 @@ function ClockWidget:_build()
         title,
     }
 
-    local buttons
+    -- Buttons: a row of small secondary buttons, then the two main
+    -- actions as big, inverted, well-separated buttons.
+    local small_w = math.floor(screen_w * 0.32)
+    local big_w = math.floor(screen_w * 0.62)
+    local small_gap = Screen:scaleBySize(40)
+    local row_gap = Screen:scaleBySize(36)
+
+    local secondary
     if self.mode == "timer" then
-        buttons = {
-            {
-                {
-                    text = self.running and _("Pause") or _("Resume"),
-                    callback = function() self:togglePause() end,
-                },
-                {
-                    text = _("Flag"),
-                    enabled = self.running,
-                    callback = function() self:addFlag() end,
-                },
-            },
-            {
-                {
-                    text = _("Reset"),
-                    callback = function() self:reset() end,
-                },
-                {
-                    text = _("Close"),
-                    callback = function() self:onClose() end,
-                },
-            },
+        secondary = self:_makeButton{
+            text = _("Flag"),
+            width = small_w,
+            enabled = self.running,
+            callback = function() self:addFlag() end,
         }
     else
-        local main_btn
-        if self.finished then
-            main_btn = {
-                text = _("Restart"),
-                callback = function() self:restart() end,
-            }
-        else
-            main_btn = {
-                text = self.running and _("Pause") or _("Resume"),
-                callback = function() self:togglePause() end,
-            }
-        end
-        buttons = {
-            {
-                main_btn,
-                {
-                    text = _("+1 min"),
-                    enabled = not self.finished,
-                    callback = function() self:addTime(60) end,
-                },
-            },
-            {
-                {
-                    text = _("Reset"),
-                    callback = function() self:reset() end,
-                },
-                {
-                    text = _("Close"),
-                    callback = function() self:onClose() end,
-                },
-            },
+        secondary = self:_makeButton{
+            text = _("+1 min"),
+            width = small_w,
+            enabled = not self.finished,
+            callback = function() self:addTime(60) end,
         }
     end
-    self.button_table = ButtonTable:new{
-        width = math.floor(screen_w * 0.8),
-        buttons = buttons,
-        zero_sep = true,
-        show_parent = self,
+    local small_row = HorizontalGroup:new{
+        align = "center",
+        secondary,
+        HorizontalSpan:new{ width = small_gap },
+        self:_makeButton{
+            text = _("Reset"),
+            width = small_w,
+            callback = function() self:reset() end,
+        },
+    }
+
+    local main_text, main_cb
+    if self.mode == "countdown" and self.finished then
+        main_text = _("Restart")
+        main_cb = function() self:restart() end
+    else
+        main_text = self.running and _("Pause") or _("Resume")
+        main_cb = function() self:togglePause() end
+    end
+    local main_btn = self:_makeButton{
+        text = main_text,
+        width = big_w,
+        font_size = 28,
+        invert = true,
+        callback = main_cb,
+    }
+    local close_btn = self:_makeButton{
+        text = _("Close"),
+        width = big_w,
+        font_size = 28,
+        invert = true,
+        callback = function() self:onClose() end,
     }
 
     local flags_widget
     if self.mode == "timer" and #self.flags > 0 then
+        local max_lines = screen_h < 700 and 3 or 6
         local lines = {}
-        local first = math.max(1, #self.flags - 5)
+        local first = math.max(1, #self.flags - (max_lines - 1))
         for i = #self.flags, first, -1 do
             local f = self.flags[i]
             local prev = i > 1 and self.flags[i - 1] or 0
@@ -240,10 +256,14 @@ function ClockWidget:_build()
 
     local vg = VerticalGroup:new{ align = "center" }
     table.insert(vg, title_cont)
-    table.insert(vg, VerticalSpan:new{ width = Size.span.vertical_large * 2 })
+    table.insert(vg, VerticalSpan:new{ width = Screen:scaleBySize(30) })
     table.insert(vg, self.time_cont)
-    table.insert(vg, VerticalSpan:new{ width = Size.span.vertical_large * 2 })
-    table.insert(vg, self.button_table)
+    table.insert(vg, VerticalSpan:new{ width = Screen:scaleBySize(40) })
+    table.insert(vg, small_row)
+    table.insert(vg, VerticalSpan:new{ width = row_gap })
+    table.insert(vg, main_btn)
+    table.insert(vg, VerticalSpan:new{ width = Screen:scaleBySize(28) })
+    table.insert(vg, close_btn)
     if flags_widget then
         table.insert(vg, VerticalSpan:new{ width = Size.span.vertical_large })
         table.insert(vg, flags_widget)
@@ -267,21 +287,36 @@ function ClockWidget:_refreshStructural()
     UIManager:setDirty(self, "ui")
 end
 
-function ClockWidget:_onTick()
-    if self.finished or not self.running then return end
-    local secs = self:_displaySeconds()
-    if self.mode == "countdown" and secs <= 0 then
-        self:_finish()
-        return
-    end
-    local str = fmtHMS(secs)
+function ClockWidget:_updateTime()
+    -- Recreate the time text widget and refresh the whole widget: relying
+    -- on the sub-widget's recorded position for a region refresh proved
+    -- unreliable, leaving the display frozen on some devices.
+    local str = fmtHMS(self:_displaySeconds())
     if #str ~= self._time_len then
         -- e.g. crossing the one-hour boundary changes the layout
         self:_refreshStructural()
-    else
-        self.time_widget:setText(str)
-        UIManager:setDirty(self, "ui", self.time_cont.dimen)
+        return
     end
+    local old = self.time_cont[1]
+    self.time_widget = TextWidget:new{
+        text = str,
+        face = self.time_face,
+        bold = true,
+    }
+    self.time_cont[1] = self.time_widget
+    if old and old.free then
+        old:free()
+    end
+    UIManager:setDirty(self, "ui")
+end
+
+function ClockWidget:_onTick()
+    if self.finished or not self.running then return end
+    if self.mode == "countdown" and self:_displaySeconds() <= 0 then
+        self:_finish()
+        return
+    end
+    self:_updateTime()
     UIManager:scheduleIn(1, self._tick)
 end
 
@@ -323,7 +358,7 @@ end
 function ClockWidget:addTime(secs)
     if self.finished then return end
     self.duration = self.duration + secs
-    self:_refreshStructural()
+    self:_updateTime()
 end
 
 function ClockWidget:reset()
